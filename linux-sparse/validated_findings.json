@@ -1,0 +1,551 @@
+{
+  "validated_at": "2026-04-12",
+  "repo": "linux (mainline HEAD)",
+  "files_checked": [
+    "net/compat.c",
+    "net/socket.c",
+    "net/devres.c",
+    "net/bluetooth/mgmt_util.c",
+    "net/bluetooth/iso.c",
+    "net/bluetooth/hci_sock.c",
+    "net/bluetooth/af_bluetooth.c",
+    "net/bluetooth/l2cap_sock.c",
+    "net/bluetooth/hci_debugfs.c",
+    "net/bluetooth/hci_conn.c",
+    "net/bluetooth/coredump.c",
+    "net/bluetooth/hci_sysfs.c",
+    "net/bluetooth/sco.c",
+    "net/bluetooth/leds.c",
+    "net/bluetooth/hci_core.c",
+    "net/bluetooth/l2cap_core.c",
+    "net/bluetooth/6lowpan.c",
+    "net/bluetooth/eir.c",
+    "net/bluetooth/smp.c",
+    "net/bluetooth/mgmt.c",
+    "net/bluetooth/hci_sync.c",
+    "net/bluetooth/hci_event.c",
+    "net/bluetooth/mgmt_config.c",
+    "net/bluetooth/ecdh_helper.c",
+    "net/bluetooth/bnep/sock.c",
+    "net/bluetooth/bnep/core.c",
+    "net/bluetooth/bnep/netdev.c",
+    "net/bluetooth/hidp/sock.c",
+    "net/bluetooth/hidp/core.c",
+    "net/bluetooth/cmtp/sock.c",
+    "net/bluetooth/cmtp/core.c",
+    "net/bluetooth/cmtp/capi.c",
+    "net/bluetooth/rfcomm/sock.c",
+    "net/bluetooth/rfcomm/tty.c",
+    "net/bluetooth/rfcomm/core.c",
+    "drivers/usb/usb-skeleton.c",
+    "drivers/usb/core/port.c",
+    "drivers/usb/core/usb.c",
+    "drivers/usb/core/hcd-pci.c",
+    "drivers/usb/core/file.c",
+    "drivers/usb/core/endpoint.c",
+    "drivers/usb/core/message.c",
+    "drivers/usb/core/urb.c",
+    "drivers/usb/core/devio.c",
+    "drivers/usb/core/buffer.c",
+    "drivers/usb/core/config.c",
+    "drivers/usb/core/sysfs.c",
+    "drivers/usb/core/hub.c",
+    "drivers/usb/core/ledtrig-usbport.c",
+    "drivers/usb/core/quirks.c",
+    "drivers/usb/core/driver.c",
+    "drivers/usb/core/devices.c",
+    "drivers/usb/core/hcd.c",
+    "io_uring/nop.c",
+    "io_uring/openclose.c",
+    "io_uring/tw.c",
+    "io_uring/mock_file.c",
+    "io_uring/msg_ring.c",
+    "io_uring/uring_cmd.c",
+    "io_uring/register.c",
+    "io_uring/io_uring.c",
+    "io_uring/waitid.c",
+    "io_uring/cancel.c",
+    "io_uring/notif.c",
+    "io_uring/net.c",
+    "io_uring/timeout.c",
+    "io_uring/memmap.c",
+    "io_uring/poll.c",
+    "io_uring/filetable.c",
+    "io_uring/eventfd.c",
+    "io_uring/rsrc.c",
+    "io_uring/xattr.c",
+    "io_uring/wait.c",
+    "io_uring/zcrx.c",
+    "io_uring/statx.c",
+    "io_uring/rw.c",
+    "io_uring/fs.c",
+    "io_uring/io-wq.c",
+    "io_uring/tctx.c",
+    "io_uring/cmd_net.c",
+    "io_uring/napi.c",
+    "io_uring/bpf_filter.c",
+    "io_uring/sqpoll.c",
+    "io_uring/kbuf.c",
+    "io_uring/futex.c"
+  ],
+  "total_original_findings": 429,
+  "total_retained": 2,
+  "false_positive_rate": "99.5%",
+  "retained_findings": [
+    {
+      "file": "net/bluetooth/cmtp/sock.c",
+      "cve": "CVE-2021-34981",
+      "original_severity": 7,
+      "start_line": 200,
+      "end_line": 271,
+      "original_description": "In the `cmtp_init_sockets()` function, the error handling path triggered when `bt_procfs_init()` fails contains a critical bug: it calls `bt_sock_unregister(BTPROTO_HIDP)` instead of `bt_sock_unregister(BTPROTO_CMTP)`. This means that when this error path is taken: (1) the CMTP socket registration is never cleaned up, leaving a registered socket protocol with no backing procfs entry and potentially open file descriptors/references that are never properly released, and (2) HIDP — a completely unrelated protocol — is incorrectly unregistered, corrupting its state. Because the CMTP socket type (`BTPROTO_CMTP`) remains registered despite the initialization failure, any sockets subsequently created under it lack the expected infrastructure, and the associated file references (including kernel file objects tied to those sockets) are never properly accounted for or decremented during shutdown, leading to a file descriptor/reference count leak.",
+      "verdict": "valid_security_issue",
+      "reason": "cmtp_sock_create uses raw sk_alloc/sock_init_data instead of bt_sock_alloc, bypassing Bluetooth-specific socket initialization and security protections.",
+      "severity": 7,
+      "evidence": "cmtp_sock_create: sk_alloc + sock_init_data instead of bt_sock_alloc",
+      "exploitability": "Missing BT socket protections could allow bypassing security controls on CMTP sockets",
+      "notes": "Small error worth an upstream patch but not practically exploitable. The bug is real: cmtp_init_sockets() calls bt_sock_unregister(BTPROTO_HIDP) instead of BTPROTO_CMTP on the bt_procfs_init failure path, and the 'error:' label only calls proto_unregister(&cmtp_proto) without undoing bt_sock_register(BTPROTO_CMTP, ...). This leaves bt_proto[BTPROTO_CMTP] as a dangling pointer into freed module memory after module init fails and unloads, and simultaneously corrupts HIDP's registration. However, reachability requires root (module load), and the failing branch requires CONFIG_PROC_FS plus an OOM during proc_create_seq_data. A theoretical UAF exists if socket(AF_BLUETOOTH, SOCK_RAW, BTPROTO_CMTP) is called after the failed init, but the preconditions make this not a practical attack. Retained for upstream fix submission only."
+    },
+    {
+      "file": "drivers/usb/core/port.c",
+      "cve": "CVE-2018-20169",
+      "original_severity": 7.2,
+      "start_line": 10,
+      "end_line": 100,
+      "original_description": "In the `disable_show` function, the return value of `usb_hub_port_status(hub, port1, &portstatus, &unused)` is not checked before `portstatus` is used in the subsequent line `disabled = !usb_port_is_power_on(hub, portstatus)`. If `usb_hub_port_status` fails (e.g., due to a device communication error or disconnection), `portstatus` will remain uninitialized or hold stale/garbage data. Using this unchecked value is analogous to the referenced vulnerability class: failing to validate the result of a USB subsystem read operation before consuming the output buffer, which can lead to incorrect behavior or exploitation of uninitialized memory. The lack of a size/result check on the status read means the code silently proceeds with potentially invalid data.",
+      "verdict": "valid_security_issue",
+      "reason": "Return value of usb_hub_port_status() is not checked before using portstatus, which could be uninitialized on failure.",
+      "severity": 7.2,
+      "evidence": "Line 85: usb_hub_port_status() called without checking return value; portstatus used uninitialized on failure",
+      "exploitability": "Use of uninitialized portstatus value if USB hub communication fails",
+      "notes": "Small error worth an upstream patch but not a practical security issue. The bug is real: usb_hub_port_status() skips writing *status on its error path (hub.c:625-630), so disable_show's stack-allocated portstatus is genuinely uninitialized if the call fails, and the result is consumed by usb_port_is_power_on() on the next line. However, impact is trivial: portstatus is a u16 used only in a bitmask test (USB_PORT_STAT_POWER = 0x0100), so the worst case is a single incorrect/random bit emitted as '0' or '1' via sysfs. No OOB read/write, no memory corruption, and at most one filtered bit of kernel-stack entropy per induced hub failure - not a usable infoleak primitive. Triggering the failure path also requires a real hub communication error or disconnection race. CVE-2018-20169 attribution is incorrect (that CVE covers bLength validation in usb_get_bos_descriptor). Realistic severity is ~2.0, not 7.2. Retained as a correctness fix worth upstreaming (add 'if (usb_hub_port_status(...)) { rc = -EIO; goto out_hdev_lock; }')."
+    }
+  ],
+  "per_file_summary": {
+    "net/compat.c": {
+      "total": 5,
+      "retained": 0,
+      "false_positives": 5
+    },
+    "net/socket.c": {
+      "total": 7,
+      "retained": 0,
+      "false_positives": 7
+    },
+    "net/devres.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "net/bluetooth/mgmt_util.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "net/bluetooth/iso.c": {
+      "total": 10,
+      "retained": 0,
+      "false_positives": 10
+    },
+    "net/bluetooth/hci_sock.c": {
+      "total": 12,
+      "retained": 0,
+      "false_positives": 12
+    },
+    "net/bluetooth/af_bluetooth.c": {
+      "total": 5,
+      "retained": 0,
+      "false_positives": 5
+    },
+    "net/bluetooth/l2cap_sock.c": {
+      "total": 12,
+      "retained": 0,
+      "false_positives": 12
+    },
+    "net/bluetooth/hci_debugfs.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "net/bluetooth/hci_conn.c": {
+      "total": 7,
+      "retained": 0,
+      "false_positives": 7
+    },
+    "net/bluetooth/coredump.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "net/bluetooth/hci_sysfs.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "net/bluetooth/sco.c": {
+      "total": 5,
+      "retained": 0,
+      "false_positives": 5
+    },
+    "net/bluetooth/leds.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "net/bluetooth/hci_core.c": {
+      "total": 10,
+      "retained": 0,
+      "false_positives": 10
+    },
+    "net/bluetooth/l2cap_core.c": {
+      "total": 25,
+      "retained": 0,
+      "false_positives": 25
+    },
+    "net/bluetooth/6lowpan.c": {
+      "total": 7,
+      "retained": 0,
+      "false_positives": 7
+    },
+    "net/bluetooth/eir.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "net/bluetooth/smp.c": {
+      "total": 14,
+      "retained": 0,
+      "false_positives": 14
+    },
+    "net/bluetooth/mgmt.c": {
+      "total": 13,
+      "retained": 0,
+      "false_positives": 13
+    },
+    "net/bluetooth/hci_sync.c": {
+      "total": 12,
+      "retained": 0,
+      "false_positives": 12
+    },
+    "net/bluetooth/hci_event.c": {
+      "total": 11,
+      "retained": 0,
+      "false_positives": 11
+    },
+    "net/bluetooth/mgmt_config.c": {
+      "total": 3,
+      "retained": 0,
+      "false_positives": 3
+    },
+    "net/bluetooth/ecdh_helper.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "net/bluetooth/bnep/sock.c": {
+      "total": 3,
+      "retained": 0,
+      "false_positives": 3
+    },
+    "net/bluetooth/bnep/core.c": {
+      "total": 4,
+      "retained": 0,
+      "false_positives": 4
+    },
+    "net/bluetooth/bnep/netdev.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "net/bluetooth/hidp/sock.c": {
+      "total": 3,
+      "retained": 0,
+      "false_positives": 3
+    },
+    "net/bluetooth/hidp/core.c": {
+      "total": 5,
+      "retained": 0,
+      "false_positives": 5
+    },
+    "net/bluetooth/cmtp/sock.c": {
+      "total": 2,
+      "retained": 1,
+      "false_positives": 1
+    },
+    "net/bluetooth/cmtp/core.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "net/bluetooth/cmtp/capi.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "net/bluetooth/rfcomm/sock.c": {
+      "total": 7,
+      "retained": 0,
+      "false_positives": 7
+    },
+    "net/bluetooth/rfcomm/tty.c": {
+      "total": 3,
+      "retained": 0,
+      "false_positives": 3
+    },
+    "net/bluetooth/rfcomm/core.c": {
+      "total": 3,
+      "retained": 0,
+      "false_positives": 3
+    },
+    "drivers/usb/usb-skeleton.c": {
+      "total": 4,
+      "retained": 0,
+      "false_positives": 4
+    },
+    "drivers/usb/core/port.c": {
+      "total": 4,
+      "retained": 1,
+      "false_positives": 3
+    },
+    "drivers/usb/core/usb.c": {
+      "total": 3,
+      "retained": 0,
+      "false_positives": 3
+    },
+    "drivers/usb/core/hcd-pci.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "drivers/usb/core/file.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "drivers/usb/core/endpoint.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "drivers/usb/core/message.c": {
+      "total": 12,
+      "retained": 0,
+      "false_positives": 12
+    },
+    "drivers/usb/core/urb.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "drivers/usb/core/devio.c": {
+      "total": 12,
+      "retained": 0,
+      "false_positives": 12
+    },
+    "drivers/usb/core/buffer.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "drivers/usb/core/config.c": {
+      "total": 10,
+      "retained": 0,
+      "false_positives": 10
+    },
+    "drivers/usb/core/sysfs.c": {
+      "total": 5,
+      "retained": 0,
+      "false_positives": 5
+    },
+    "drivers/usb/core/hub.c": {
+      "total": 22,
+      "retained": 0,
+      "false_positives": 22
+    },
+    "drivers/usb/core/ledtrig-usbport.c": {
+      "total": 4,
+      "retained": 0,
+      "false_positives": 4
+    },
+    "drivers/usb/core/quirks.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "drivers/usb/core/driver.c": {
+      "total": 7,
+      "retained": 0,
+      "false_positives": 7
+    },
+    "drivers/usb/core/devices.c": {
+      "total": 3,
+      "retained": 0,
+      "false_positives": 3
+    },
+    "drivers/usb/core/hcd.c": {
+      "total": 5,
+      "retained": 0,
+      "false_positives": 5
+    },
+    "io_uring/nop.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "io_uring/openclose.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "io_uring/tw.c": {
+      "total": 3,
+      "retained": 0,
+      "false_positives": 3
+    },
+    "io_uring/mock_file.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "io_uring/msg_ring.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "io_uring/uring_cmd.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "io_uring/register.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "io_uring/io_uring.c": {
+      "total": 14,
+      "retained": 0,
+      "false_positives": 14
+    },
+    "io_uring/waitid.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "io_uring/cancel.c": {
+      "total": 6,
+      "retained": 0,
+      "false_positives": 6
+    },
+    "io_uring/notif.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "io_uring/net.c": {
+      "total": 16,
+      "retained": 0,
+      "false_positives": 16
+    },
+    "io_uring/timeout.c": {
+      "total": 4,
+      "retained": 0,
+      "false_positives": 4
+    },
+    "io_uring/memmap.c": {
+      "total": 5,
+      "retained": 0,
+      "false_positives": 5
+    },
+    "io_uring/poll.c": {
+      "total": 7,
+      "retained": 0,
+      "false_positives": 7
+    },
+    "io_uring/filetable.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "io_uring/eventfd.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "io_uring/rsrc.c": {
+      "total": 8,
+      "retained": 0,
+      "false_positives": 8
+    },
+    "io_uring/xattr.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "io_uring/wait.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "io_uring/zcrx.c": {
+      "total": 4,
+      "retained": 0,
+      "false_positives": 4
+    },
+    "io_uring/statx.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "io_uring/rw.c": {
+      "total": 10,
+      "retained": 0,
+      "false_positives": 10
+    },
+    "io_uring/fs.c": {
+      "total": 3,
+      "retained": 0,
+      "false_positives": 3
+    },
+    "io_uring/io-wq.c": {
+      "total": 12,
+      "retained": 0,
+      "false_positives": 12
+    },
+    "io_uring/tctx.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "io_uring/cmd_net.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "io_uring/napi.c": {
+      "total": 1,
+      "retained": 0,
+      "false_positives": 1
+    },
+    "io_uring/bpf_filter.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "io_uring/sqpoll.c": {
+      "total": 3,
+      "retained": 0,
+      "false_positives": 3
+    },
+    "io_uring/kbuf.c": {
+      "total": 2,
+      "retained": 0,
+      "false_positives": 2
+    },
+    "io_uring/futex.c": {
+      "total": 3,
+      "retained": 0,
+      "false_positives": 3
+    }
+  }
+}
