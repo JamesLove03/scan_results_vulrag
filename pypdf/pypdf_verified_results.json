@@ -1,0 +1,80 @@
+{
+  "processed_files": [
+    "pypdf/_utils.py",
+    "pypdf/_doc_common.py",
+    "pypdf/pagerange.py",
+    "pypdf/_encryption.py",
+    "pypdf/_reader.py"
+  ],
+  "verified_bugs": [
+    {
+      "file": "pypdf/_reader.py",
+      "function": "_read_xref_subsections",
+      "start_line": 1231,
+      "end_line": 1264,
+      "cve": "CVE-2022-3273",
+      "class": "Denial of Service (resource exhaustion)",
+      "severity": 6.5,
+      "description": "`_read_xref_subsections` iterates `range(start, start + size)` where `size` comes from the PDF's attacker-controlled `/Index` or `/Size` entry in the xref stream. There is no upper bound on `size`. When the underlying BytesIO data is exhausted, `get_entry` returns 0 rather than terminating the loop, so the iteration continues to completion. A malicious PDF declaring e.g. `/Index [0 4000000000]` triggers multi-billion-iteration CPU consumption.",
+      "reachability": "Directly reachable via `PdfReader(untrusted_pdf)` during initial xref parsing — no authentication, no special flags required. This is the primary entry point of the library.",
+      "exploitability": "A single crafted PDF delivered to any application that calls `PdfReader` on user-supplied input causes hang/OOM. No attacker-side computation needed beyond crafting a tiny xref stream with a large `/Index` or `/Size` value.",
+      "suggested_fix": "Validate `size` against a sane cap (PDF 32000 spec implies ~8.4M objects max) before entering the inner loop, and/or cap the cumulative number of xref entries processed. Raise PdfReadError when exceeded.",
+      "status": "ALREADY PATCHED — fixed 2026-04-14 in commit 62338e9d (PR #3733: 'SEC: Limit the allowed size of xref and object streams'). New function `_sanitize_pdf15_xref_stream_index_pairs` clamps /Index counts to fit actual stream data length. Not eligible for a new CVE."
+    }
+  ],
+  "false_positives": [
+    {
+      "file": "pypdf/_utils.py",
+      "cve": "CVE-2015-10062",
+      "reason": "File.__str__/__repr__ are Python debug dunders; pypdf has no HTML/JSON rendering surface. json.dumps does not call __str__. No reachable sink."
+    },
+    {
+      "file": "pypdf/_doc_common.py",
+      "function": "_build_field",
+      "cve": "CVE-2024-27290",
+      "reason": "_write_field emits a plain-text debug report to a caller-supplied fileobj. pypdf has no HTML context; XSS claim has no sink."
+    },
+    {
+      "file": "pypdf/_doc_common.py",
+      "function": "get_pages_showing_field",
+      "cve": "CVE-2024-27290",
+      "reason": "Returns list[PageObject]; never emits strings. No HTML context. Broad except merely normalizes type errors."
+    },
+    {
+      "file": "pypdf/_doc_common.py",
+      "function": "_get_attachments",
+      "cve": "CVE-2023-6753",
+      "reason": "Function only builds an in-memory dict. No filesystem operations occur; path traversal is not reachable within this function."
+    },
+    {
+      "file": "pypdf/pagerange.py",
+      "function": "parse_filename_page_ranges",
+      "cve": "CVE-2024-27290",
+      "reason": "CLI argument parser. Input is developer-supplied argv, not PDF-derived. No HTML output sink."
+    },
+    {
+      "file": "pypdf/_encryption.py",
+      "function": "verify_owner_password/verify_user_password",
+      "cve": "CVE-2019-18933",
+      "reason": "Empty passwords are explicitly valid per PDF spec (default user password). Hash is still compared against stored u_value/o_value; empty password only succeeds for PDFs encrypted with one. Cited CVE is an unrelated web-auth issue."
+    },
+    {
+      "file": "pypdf/_encryption.py",
+      "function": "compute_Perms_value",
+      "cve": "CVE-2012-3458",
+      "reason": "AES-256-ECB for the Perms block is mandated by ISO 32000 Algorithm 3.10. Block is exactly 16 bytes (one AES block), so ECB pattern-leakage does not apply. Changing the mode would break spec conformance."
+    },
+    {
+      "file": "pypdf/_encryption.py",
+      "function": "verify_v4/verify_v5",
+      "cve": "CVE-2016-2513",
+      "reason": "pypdf decrypts local files on the user's own machine. No network oracle exists; offline attackers can brute force without caring about timing. No remote attack surface."
+    },
+    {
+      "file": "pypdf/_reader.py",
+      "function": "PdfReader.__init__",
+      "cve": "CVE-2023-40587",
+      "reason": "Python 3's open() raises ValueError on embedded null bytes natively. Null-byte path traversal is a C/PHP-era bug not reachable in Python 3. Additionally, paths are supplied by the library consumer, not PDF content."
+    }
+  ]
+}

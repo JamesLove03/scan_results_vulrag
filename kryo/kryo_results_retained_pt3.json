@@ -1,0 +1,49 @@
+{
+  "summary": {
+    "total_original_findings": 34,
+    "total_prev_retained_findings": 23,
+    "total_retained_findings_pt3": 1,
+    "total_filtered_from_prev_retained": 22,
+    "original_to_pt3_ratio": "34:1",
+    "prev_retained_to_pt3_ratio": "23:1"
+  },
+  "methodology": [
+    "Re-reviewed pt2 survivors against the actual Kryo source code and runtime behavior.",
+    "Filtered the chunked-input item because the observed failure is malformed-input handling, not a concrete security issue.",
+    "Kept the unsafe direct-memory overflow issue because it is reachable through the public unsafe output API and can flow into unsafe memory copy with an overflowed byte count."
+  ],
+  "filtered_false_positive_count": 1,
+  "findings": [
+    {
+      "original_finding_data": {
+        "code_snippet": "public void writeInts (int[] array, int offset, int count) throws KryoException {\n\t\twriteBytes(array, intArrayBaseOffset, array.length << 2);\n\t}\n\n\tpublic void writeLongs (long[] array, int offset, int count) throws KryoException {\n\t\twriteBytes(array, longArrayBaseOffset, array.length << 3);\n\t}\n\n\tpublic void writeFloats (float[] array, int offset, int count) throws KryoException {\n\t\twriteBytes(array, floatArrayBaseOffset, array.length << 2);\n\t}\n\n\tpublic void writeDoubles (double[] array, int offset, int count) throws KryoException {\n\t\twriteBytes(array, doubleArrayBaseOffset, array.length << 3);\n\t}\n\n\tpublic void writeShorts (short[] array, int offset, int count) throws KryoException {\n\t\twriteBytes(array, shortArrayBaseOffset, array.length << 1);\n\t}\n\n\tpublic void writeChars (char[] array, int offset, int count) throws KryoException {\n\t\twriteBytes(array, charArrayBaseOffset, array.length << 1);\n\t}\n\n\tpublic void writeBooleans (boolean[] array, int offset, int count) throws KryoException {\n\t\twriteBytes(array, booleanArrayBaseOffset, array.length);\n\t}\n\n\tpublic void writeBytes (byte[] array, int offset, int count) throws KryoException {\n\t\twriteBytes(array, byteArrayBaseOffset + offset, count);\n\t}\n\n\t\n\tpublic void writeBytes (Object from, long offset, int count) throws KryoException {\n\t\tint copyCount = Math.min(capacity - position, count);\n\t\twhile (true) {\n\t\t\tunsafe.copyMemory(from, offset, null, bufferAddress + position, copyCount);\n\t\t\tposition += copyCount;\n\t\t\tcount -= copyCount;\n\t\t\tif (count == 0) break;\n\t\t\toffset += copyCount;\n\t\t\tcopyCount = Math.min(capacity, count);\n\t\t\trequire(copyCount);\n\t\t}\n\t\tsetBufferPosition(byteBuffer, position);\n\t}\n}",
+        "cve": "CVE-2023-34454",
+        "severity": 7.0,
+        "description": "The vulnerability exists in the `writeInts`, `writeLongs`, `writeFloats`, `writeDoubles`, `writeShorts`, and `writeChars` methods. Each of these methods calculates the total byte size of an input array by shifting `array.length` left by 1, 2, or 3 bits (equivalent to multiplying by 2, 4, or 8 respectively). When `array.length` is sufficiently large (e.g., close to Integer.MAX_VALUE), these bit-shift operations cause a 32-bit integer overflow, producing a negative result. This negative value is then passed as the `count` parameter to the underlying `writeBytes(Object, long, int)` method. That method uses `count` directly in memory copy operations (via `unsafe.copyMemory`) and comparisons with `capacity`, which can lead to incorrect memory access, heap corruption, or fatal JVM crashes \u2014 since the low-level unsafe operations do not validate for negative sizes.",
+        "solution": "Before performing the bit-shift to compute the byte size, each affected method should validate that the result does not overflow. Concretely, compute the byte size as a separate variable and check whether it is less than `array.length` (which indicates overflow has occurred). If an overflow is detected, throw a `KryoException` indicating the input is too large. For example, in `writeInts`: compute `int byteCount = array.length << 2;`, then check `if (byteCount < array.length) throw new KryoException(\"Input array too large: \" + array.length);`, and only then call `writeBytes(array, intArrayBaseOffset, byteCount);`. Apply the same pattern to `writeLongs` (shift 3), `writeFloats` (shift 2), `writeDoubles` (shift 3), `writeShorts` (shift 1), and `writeChars` (shift 1). The `writeBooleans` method does not multiply so it is not affected. Additionally, the `offset` and `count` parameters currently passed into each method are ignored in favor of `array.length`; the methods should either use the caller-supplied `offset` and `count` (with appropriate bounds checks) or document clearly that the full array is always written.",
+        "start_line": 187,
+        "end_line": 233
+      },
+      "file": "src/com/esotericsoftware/kryo/unsafe/UnsafeByteBufferOutput.java",
+      "cve": "CVE-2023-34454",
+      "verdict": "valid_security_issue",
+      "severity": 7.0,
+      "reason": "Reachable integer-overflow/size-validation defect in bulk primitive array writes. writeInts/writeLongs/writeFloats/writeDoubles/writeShorts/writeChars compute byte count using left shifts on array.length and pass the result directly to unsafe memory copy without overflow guard. A large-enough array length can produce a negative count and unsafe copy path.",
+      "evidence": {
+        "repo_file": "src/com/esotericsoftware/kryo/unsafe/UnsafeByteBufferOutput.java",
+        "functions": [
+          "UnsafeByteBufferOutput.writeInts",
+          "UnsafeByteBufferOutput.writeLongs",
+          "UnsafeByteBufferOutput.writeFloats",
+          "UnsafeByteBufferOutput.writeDoubles",
+          "UnsafeByteBufferOutput.writeShorts",
+          "UnsafeByteBufferOutput.writeChars",
+          "UnsafeByteBufferOutput.writeBytes(Object,long,int)"
+        ],
+        "code_path": "array.length << N -> writeBytes(Object,long,int) -> unsafe.copyMemory(...)",
+        "reachability": "Directly reachable through public serializer output APIs when unsafe output is used."
+      },
+      "exploitability": "low_to_medium"
+    }
+  ]
+}

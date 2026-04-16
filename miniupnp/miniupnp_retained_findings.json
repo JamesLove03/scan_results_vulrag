@@ -1,0 +1,214 @@
+[
+  {
+    "finding_index": 15,
+    "original_finding": {
+      "file": "miniupnpd/upnpredirect.c",
+      "cve": "CVE-2012-3552",
+      "severity": 7.1,
+      "start_line": 473,
+      "end_line": 535,
+      "description": "The code contains a race condition vulnerability between `upnp_get_redirection_infos_by_index` and `_upnp_delete_redir`. When these functions are called concurrently from multiple threads, `upnp_get_redirection_infos_by_index` may read a redirection rule (via `get_redirect_rule_by_index`) while `_upnp_delete_redir` simultaneously removes the same rule. Since there is no synchronization mechanism (e.g., mutex, RW lock, or RCU) protecting access to the redirection rule table, the read operation in the first function can operate on memory that has been freed or is in an inconsistent state by the deletion in the second function. This TOCTOU (Time-of-Check-Time-of-Use) race can result in use-after-free conditions, memory corruption, and system instability. Additionally, `memcpy(protocol, \"TCP\", 4)` and similar calls write into the `protocol` buffer without any bounds checking against a provided length parameter, which can cause a buffer overflow if the caller provides a too-small buffer.",
+      "original": {
+        "code_snippet": "int\nupnp_get_redirection_infos_by_index(int index,\n                                    unsigned short * eport, char * protocol,\n                                    unsigned short * iport,\n                                    char * iaddr, int iaddrlen,\n                                    char * desc, int desclen,\n                                    char * rhost, int rhostlen,\n                                    unsigned int * leaseduration)\n{\n\t\n\tint proto = 0;\n\tunsigned int timestamp;\n\ttime_t current_time;\n\n\tif(desc && (desclen > 0))\n\t\tdesc[0] = '\\0';\n\tif(rhost && (rhostlen > 0))\n\t\trhost[0] = '\\0';\n\tif(get_redirect_rule_by_index(index, 0, eport, iaddr, iaddrlen,\n\t                              iport, &proto, desc, desclen,\n\t                              rhost, rhostlen, &timestamp,\n\t                              0, 0) < 0)\n\t\treturn -1;\n\telse\n\t{\n\t\tcurrent_time = upnp_time();\n\t\t*leaseduration = (timestamp > (unsigned int)current_time)\n\t\t                 ? (timestamp - current_time)\n\t\t                 : 0;\n\t\tif(proto == IPPROTO_TCP)\n\t\t\tmemcpy(protocol, \"TCP\", 4);\n#ifdef IPPROTO_UDPLITE\n\t\telse if(proto == IPPROTO_UDPLITE)\n\t\t\tmemcpy(protocol, \"UDPLITE\", 8);\n#endif \n\t\telse\n\t\t\tmemcpy(protocol, \"UDP\", 4);\n\t\treturn 0;\n\t}\n}\n\n\nint\n_upnp_delete_redir(unsigned short eport, int proto)\n{\n\tint r;\n#if defined(__linux__)\n\tr = delete_redirect_and_filter_rules(eport, proto);\n#elif defined(USE_PF)\n\tr = delete_redirect_and_filter_rules(ext_if_name, eport, proto);\n#else\n\tr = delete_redirect_rule(ext_if_name, eport, proto);\n\tdelete_filter_rule(ext_if_name, eport, proto);\n#endif\n#ifdef ENABLE_LEASEFILE\n\tlease_file_remove( eport, proto);\n#endif\n\n#ifdef ENABLE_EVENTS\n\tupnp_event_var_change_notify(EWanIPC);\n#endif\n\treturn r;\n}",
+        "cve": "CVE-2012-3552",
+        "severity": 7.1,
+        "description": "The code contains a race condition vulnerability between `upnp_get_redirection_infos_by_index` and `_upnp_delete_redir`. When these functions are called concurrently from multiple threads, `upnp_get_redirection_infos_by_index` may read a redirection rule (via `get_redirect_rule_by_index`) while `_upnp_delete_redir` simultaneously removes the same rule. Since there is no synchronization mechanism (e.g., mutex, RW lock, or RCU) protecting access to the redirection rule table, the read operation in the first function can operate on memory that has been freed or is in an inconsistent state by the deletion in the second function. This TOCTOU (Time-of-Check-Time-of-Use) race can result in use-after-free conditions, memory corruption, and system instability. Additionally, `memcpy(protocol, \"TCP\", 4)` and similar calls write into the `protocol` buffer without any bounds checking against a provided length parameter, which can cause a buffer overflow if the caller provides a too-small buffer.",
+        "solution": "1. **Introduce a synchronization mechanism** (e.g., a global RW lock or RCU-based structure) to protect the redirection rule table. Wrap all read accesses — specifically the call to `get_redirect_rule_by_index` and subsequent use of its output in `upnp_get_redirection_infos_by_index` — inside a read-lock acquisition and release. Wrap all write/delete operations in `_upnp_delete_redir` (calls to `delete_redirect_and_filter_rules`, `delete_redirect_rule`, etc.) inside a write-lock acquisition and release. If using an RCU-style approach, use `rcu_read_lock()`/`rcu_read_unlock()` for readers and `synchronize_rcu()` or `call_rcu()` with deferred freeing for writers, ensuring that deletion does not free rule memory until all concurrent readers have completed. 2. **Add bounds checking for the `protocol` buffer**: add a `protolen` parameter to `upnp_get_redirection_infos_by_index` and verify that the buffer is large enough before calling `memcpy`, or use `strncpy`/`snprintf` with an explicit length limit to prevent buffer overflows when writing protocol strings.",
+        "start_line": 473,
+        "end_line": 535
+      }
+    },
+    "verdict": "valid_security_issue",
+    "reason": "The race-condition portion of the finding is a false positive because miniupnpd is single-threaded, but the same function really does write protocol strings into an unbounded caller buffer. upnp_get_redirection_infos_by_index() copies \"UDPLITE\" with memcpy(protocol, \"UDPLITE\", 8) and some TOMATO-only callers in miniupnpd.c pass char proto[4]. A remote SOAP AddPortMapping/AddAnyPortMapping request can supply NewProtocol=UDPLITE, create a mapping, and later tomato_save()/tomato_delete() enumerates mappings into that 4-byte stack buffer, overflowing it.",
+    "severity": "medium",
+    "evidence": {
+      "repo_files": [
+        "miniupnpd/upnpredirect.c",
+        "miniupnpd/miniupnpd.c",
+        "miniupnpd/upnpsoap.c",
+        "miniupnpd/upnputils.c"
+      ],
+      "functions": [
+        "upnp_get_redirection_infos_by_index",
+        "tomato_save",
+        "tomato_delete",
+        "AddPortMapping",
+        "AddAnyPortMapping",
+        "proto_atoi"
+      ],
+      "code_path": [
+        "miniupnpd/upnpsoap.c:518-559 accepts NewProtocol from SOAP and passes it to upnp_redirect()",
+        "miniupnpd/upnpredirect.c:309 uses proto_atoi(), which accepts UDPLITE via miniupnpd/upnputils.c:248-255",
+        "miniupnpd/upnpredirect.c:504-509 writes \"UDPLITE\" with memcpy(protocol, \"UDPLITE\", 8)",
+        "miniupnpd/miniupnpd.c:151-170 and 244-265 call upnp_get_redirection_infos_by_index() with char proto[4] in TOMATO builds"
+      ]
+    },
+    "exploitability": "Requires a build with TOMATO support and UDPLITE available. An attacker who can send UPnP SOAP mapping requests can create a UDPLITE mapping; the overflow is then triggered when the Tomato helper enumerates mappings during save/delete handling or shutdown. Impact is stack corruption in the daemon process."
+  },
+  {
+    "finding_index": 46,
+    "original_finding": {
+      "file": "miniupnpd/miniupnpd.c",
+      "cve": "CVE-2016-8633",
+      "severity": 6.2,
+      "start_line": 612,
+      "end_line": 688,
+      "description": "The vulnerability exists in the `nfqueue_cb` function due to missing packet length validation before processing packet data. Specifically: (1) The return value of `nfq_get_payload(nfa, &pkt)` (stored in `size`) is never checked for being negative (error case) or too small before use. (2) Before computing `pkt + x` (where `x = sizeof(struct ip) + sizeof(struct udphdr)`) and `size - x`, there is no check that `size >= x`. If a crafted or fragmented packet is received whose payload is smaller than the combined IP and UDP header sizes, the code will perform an out-of-bounds read when casting `(pkt + sizeof(struct ip))` to `struct udphdr *` and when computing `size - x` (which would wrap or be negative), potentially causing a buffer overflow or enabling arbitrary code execution. Additionally, in `ProcessNFQUEUE`, the return value `res` from `recvfrom` is passed directly to `nfq_handle_packet` without checking for a negative/error value.",
+      "original": {
+        "code_snippet": "static int nfqueue_cb(\n                struct nfq_q_handle *qh,\n                struct nfgenmsg *nfmsg,\n                struct nfq_data *nfa,\n                void *data) {\n\n\tchar\t*pkt;\n\tstruct nfqnl_msg_packet_hdr *ph;\n\tph = nfq_get_msg_packet_hdr(nfa);\n\n\tif ( ph ) {\n\n\t\tint id = 0, size = 0;\n\t\tid = ntohl(ph->packet_id);\n\n\t\tsize = nfq_get_payload(nfa, &pkt);\n\n    \t\tstruct ip *iph = (struct ip *) pkt;\n\n\t\tint id_protocol = identify_ip_protocol(pkt);\n\n\t\tint dport = get_udp_dst_port(pkt);\n\n\t\tint x = sizeof (struct ip) + sizeof (struct udphdr);\n\n\t\t\n\t\tif ( (dport == 1900) && (id_protocol == IPPROTO_UDP)\n\t\t\t&& (ssdp.sin_addr.s_addr == iph->ip_dst.s_addr) ) {\n\n\t\t\t\n\t\t\tu_int32_t idx = nfq_get_indev(nfa);\n\t\t\tint i = 0;\n\t\t\tfor ( ;i < n_nfqix ; i++) {\n\t\t\t\tif ( nfqix[i] == idx ) {\n\n\t\t\t\t\tstruct udphdr *udp = (struct udphdr *) (pkt + sizeof(struct ip));\n\n\t\t\t\t\tchar *dd = pkt + x;\n\n\t\t\t\t\tstruct sockaddr_in sendername;\n\t\t\t\t\tsendername.sin_family = AF_INET;\n\t\t\t\t\tsendername.sin_port = udp->source;\n\t\t\t\t\tsendername.sin_addr.s_addr = iph->ip_src.s_addr;\n\n\t\t\t\t\t\n\t\t\t\t\tProcessSSDPData (sudp, dd, size - x,\n\t\t\t\t\t                 &sendername, -1, (unsigned short) 5555);\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\n\t\tnfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);\n\n\t} else {\n\t\tsyslog(LOG_ERR,\"nfq_get_msg_packet_hdr failed\");\n\t\treturn 1;\n\t\t\n\t}\n\n\treturn 0;\n}\n\nstatic void ProcessNFQUEUE(int fd){\n\tchar buf[4096];\n\n\tsocklen_t len_r;\n\tstruct sockaddr_in sendername;\n\tlen_r = sizeof(struct sockaddr_in);\n\n        int res = recvfrom(fd, buf, sizeof(buf), 0,\n\t\t\t(struct sockaddr *)&sendername, &len_r);\n\n\tnfq_handle_packet(nfqHandle, buf, res);\n}\n#endif",
+        "cve": "CVE-2016-8633",
+        "severity": 6.2,
+        "description": "The vulnerability exists in the `nfqueue_cb` function due to missing packet length validation before processing packet data. Specifically: (1) The return value of `nfq_get_payload(nfa, &pkt)` (stored in `size`) is never checked for being negative (error case) or too small before use. (2) Before computing `pkt + x` (where `x = sizeof(struct ip) + sizeof(struct udphdr)`) and `size - x`, there is no check that `size >= x`. If a crafted or fragmented packet is received whose payload is smaller than the combined IP and UDP header sizes, the code will perform an out-of-bounds read when casting `(pkt + sizeof(struct ip))` to `struct udphdr *` and when computing `size - x` (which would wrap or be negative), potentially causing a buffer overflow or enabling arbitrary code execution. Additionally, in `ProcessNFQUEUE`, the return value `res` from `recvfrom` is passed directly to `nfq_handle_packet` without checking for a negative/error value.",
+        "solution": "1. In `nfqueue_cb`, after calling `nfq_get_payload`, validate that `size` is greater than zero before proceeding: `if (size <= 0) { nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL); return 0; }`. 2. Before accessing the UDP header and payload (i.e., before `struct udphdr *udp = ...` and `char *dd = pkt + x`), add a bounds check: `if (size < x) { /* packet too short, skip processing */ continue or break; }`. This ensures that both the IP and UDP headers are fully present in the payload buffer before dereferencing them and before computing `size - x` as the data length passed to `ProcessSSDPData`. 3. In `ProcessNFQUEUE`, check that `res > 0` before passing to `nfq_handle_packet`: `if (res > 0) { nfq_handle_packet(nfqHandle, buf, res); }`. These checks collectively prevent out-of-bounds memory accesses when processing malformed or fragmented packets.",
+        "start_line": 612,
+        "end_line": 688
+      }
+    },
+    "verdict": "valid_security_issue",
+    "reason": "nfqueue_cb() trusts nfq_get_payload() output without checking that the returned payload is large enough for an IPv4 header plus UDP header before reading pkt[9], casting pkt to struct ip, casting pkt + sizeof(struct ip) to struct udphdr, and passing pkt + x to ProcessSSDPData(). Short queued packets can therefore drive out-of-bounds reads in the daemon.",
+    "severity": "medium",
+    "evidence": {
+      "repo_files": [
+        "miniupnpd/miniupnpd.c"
+      ],
+      "functions": [
+        "identify_ip_protocol",
+        "get_udp_dst_port",
+        "nfqueue_cb",
+        "ProcessNFQUEUE"
+      ],
+      "code_path": [
+        "miniupnpd/miniupnpd.c:612-688 nfqueue_cb() reads pkt and derived headers before validating size",
+        "miniupnpd/miniupnpd.c:544-560 helper functions dereference fixed offsets in pkt",
+        "miniupnpd/miniupnpd.c:640-660 uses iph, udp, and pkt + x with size - x",
+        "miniupnpd/miniupnpd.c:3108-3135 / 3169-3177 show queued packets reaching the parser"
+      ]
+    },
+    "exploitability": "Reachable only when miniupnpd is built with ENABLE_NFQUEUE and configured to receive queued packets. A remote sender that can inject short SSDP/UDP packets into the NFQUEUE path can crash the daemon and may gain further leverage from out-of-bounds reads, but this is primarily a conditional DoS issue."
+  },
+  {
+    "finding_index": 116,
+    "original_finding": {
+      "file": "miniupnpc-libevent/miniupnpc-libevent.c",
+      "cve": "CVE-2022-1734",
+      "severity": 4.4,
+      "start_line": 852,
+      "end_line": 915,
+      "description": "The vulnerability in this code is a potential use-after-free scenario in the `upnpc_finalize` function. When iterating through `p->devices` and calling `upnpc_device_finalize(d)` followed by `free(d)`, there is no guarantee that all pending asynchronous HTTP callbacks (registered via libevent's `evhttp`) associated with `d->desc_conn` or `d->soap_conn` have been fully cancelled before the device memory is freed. Specifically, `evhttp_connection_free` is called on active connections that may have in-flight requests with callback closures still referencing the `upnpc_device_t *d` pointer. If the libevent event loop dispatches one of these pending callbacks after `free(d)` has been called (e.g., a SOAP response callback or a description-fetch completion callback), it will dereference freed memory, resulting in a use-after-free vulnerability. The lack of synchronization between the cleanup routine and any ongoing HTTP/SOAP operations is the root cause.",
+      "original": {
+        "code_snippet": "static void upnpc_device_finalize(upnpc_device_t * d)\n{\n\td->state = 0;\n\tfree(d->root_desc_location);\n\td->root_desc_location = NULL;\n\tfree(d->control_cif_url);\n\td->control_cif_url = NULL;\n\tfree(d->event_cif_url);\n\td->event_cif_url = NULL;\n\tfree(d->cif_service_type);\n\td->cif_service_type = NULL;\n\tfree(d->control_conn_url);\n\td->control_conn_url = NULL;\n\tfree(d->event_conn_url);\n\td->event_conn_url = NULL;\n\tfree(d->conn_service_type);\n\td->conn_service_type = NULL;\n\tif(d->desc_conn) {\n\t\tevhttp_connection_free(d->desc_conn);\n\t\td->desc_conn = NULL;\n\t}\n\tif(d->soap_conn) {\n\t\tevhttp_connection_free(d->soap_conn);\n\t\td->soap_conn = NULL;\n\t}\n\tClearNameValueList(&d->soap_response_data);\n#ifdef ENABLE_UPNP_EVENTS\n\tfree(d->event_conn_sid);\n\td->event_conn_sid = NULL;\n#endif \n}\n\nint upnpc_finalize(upnpc_t * p)\n{\n\tif(!p) return UPNPC_ERR_INVALID_ARGS;\n\tp->discover_device_index = 0;\n\tif(p->ssdp_socket >= 0) {\n\t\tclose(p->ssdp_socket);\n\t\tp->ssdp_socket = -1;\n\t}\n\tif(p->ev_ssdp_recv) {\n\t\tevent_free(p->ev_ssdp_recv);\n\t\tp->ev_ssdp_recv = NULL;\n\t}\n\tif(p->ev_ssdp_writable) {\n\t\tevent_free(p->ev_ssdp_writable);\n\t\tp->ev_ssdp_writable = NULL;\n\t}\n\twhile(p->devices != NULL) {\n\t\tupnpc_device_t * d = p->devices;\n\t\tupnpc_device_finalize(d);\n\t\tp->devices = d->next;\n\t\tfree(d);\n\t}\n\tfree(p->local_address);\n\tp->local_address = NULL;\n#ifdef ENABLE_UPNP_EVENTS\n\tif(p->http_server) {\n\t\tevhttp_free(p->http_server);\n\t\tp->http_server = NULL;\n\t}\n#endif \n\treturn UPNPC_OK;\n}",
+        "cve": "CVE-2022-1734",
+        "severity": 4.4,
+        "description": "The vulnerability in this code is a potential use-after-free scenario in the `upnpc_finalize` function. When iterating through `p->devices` and calling `upnpc_device_finalize(d)` followed by `free(d)`, there is no guarantee that all pending asynchronous HTTP callbacks (registered via libevent's `evhttp`) associated with `d->desc_conn` or `d->soap_conn` have been fully cancelled before the device memory is freed. Specifically, `evhttp_connection_free` is called on active connections that may have in-flight requests with callback closures still referencing the `upnpc_device_t *d` pointer. If the libevent event loop dispatches one of these pending callbacks after `free(d)` has been called (e.g., a SOAP response callback or a description-fetch completion callback), it will dereference freed memory, resulting in a use-after-free vulnerability. The lack of synchronization between the cleanup routine and any ongoing HTTP/SOAP operations is the root cause.",
+        "solution": "Before freeing each device in the loop within `upnpc_finalize`, ensure the device is fully unregistered from all asynchronous contexts prior to resource deallocation. Concretely: (1) Remove the device node from the `p->devices` linked list *before* calling `upnpc_device_finalize`, so no other code path can observe or enqueue new operations on `d`. (2) Inside `upnpc_device_finalize`, explicitly cancel and free any pending HTTP requests on `desc_conn` and `soap_conn` before calling `evhttp_connection_free`, using `evhttp_cancel_request` on any in-flight `evhttp_request` objects associated with those connections. (3) Nullify all callback user-data pointers that reference `d` before freeing it, ensuring that any callbacks that fire after `free(d)` cannot dereference stale pointers. This mirrors the pattern in the fix reference: unregister/decouple the device from the event infrastructure *first*, then proceed with memory cleanup, eliminating the race between pending callbacks and deallocation.",
+        "start_line": 852,
+        "end_line": 915
+      }
+    },
+    "verdict": "valid_security_issue",
+    "reason": "The exact pending-request theory in the original report is not proven from the source alone, but the module does contain a reachable use-after-free around finalization and asynchronous callbacks. upnpc_soap_response() invokes the user ready callback, and if that callback calls the public upnpc_finalize() API, upnpc_finalize() frees the current upnpc_device_t. Control then returns to upnpc_soap_response(), which still writes d->state and reads d->parent, so a callback-triggered finalize produces a real UAF in this module.",
+    "severity": "medium",
+    "evidence": {
+      "repo_files": [
+        "miniupnpc-libevent/miniupnpc-libevent.c",
+        "miniupnpc-libevent/miniupnpc-libevent.h"
+      ],
+      "functions": [
+        "upnpc_soap_response",
+        "upnpc_finalize",
+        "upnpc_device_finalize"
+      ],
+      "code_path": [
+        "miniupnpc-libevent/miniupnpc-libevent.h:94-105 exposes ready_cb/soap_cb and upnpc_finalize() with no callback-lifetime restriction",
+        "miniupnpc-libevent/miniupnpc-libevent.c:457-490 calls d->parent->ready_cb(...) from upnpc_soap_response()",
+        "miniupnpc-libevent/miniupnpc-libevent.c:884-905 frees devices inside upnpc_finalize()",
+        "miniupnpc-libevent/miniupnpc-libevent.c:491-492 accesses d after the callback returns"
+      ]
+    },
+    "exploitability": "Requires an embedding application to call upnpc_finalize() from its ready/soap callback. Once that usage exists, any discovered device that drives the callback path can trigger a use-after-free and crash the client process; a malicious UPnP responder could abuse that behavior."
+  },
+  {
+    "finding_index": 142,
+    "original_finding": {
+      "file": "miniupnpc/src/minihttptestserver.c",
+      "cve": "CVE-2024-29195",
+      "severity": 7.0,
+      "start_line": 103,
+      "end_line": 163,
+      "description": "The vulnerability lies in the buffer size calculation on this line: `buffer_length = 256 + content_length + (content_length >> 4);`. There are two related problems. First, if `content_length` is large (close to SIZE_MAX), the arithmetic operations—specifically `content_length + (content_length >> 4)` and then adding 256—can cause an integer wraparound (overflow) on the unsigned `size_t` type, producing a `buffer_length` that is far smaller than the actual required size. Second, even without overflow, the calculation is semantically wrong: the chunked Transfer-Encoding format adds per-chunk overhead (hex size line + CRLF prefix and CRLF suffix). In the worst case (chunks of size 1), this overhead can be ~5–6 extra bytes per byte of content, vastly exceeding the `content_length / 16` overhead reserved. As a result, the subsequent `snprintf`, `memcpy`, and direct byte writes into `response_buffer` during the chunked encoding loop will write beyond the allocated buffer boundary, causing a heap buffer overflow that can lead to memory corruption or remote code execution.",
+      "original": {
+        "code_snippet": "char * build_chunked_response(size_t content_length, size_t * response_len)\n{\n\tchar * response_buffer;\n\tchar * content_buffer;\n\tsize_t buffer_length;\n\tsize_t i;\n\tunsigned int n;\n\n\t\n\tbuffer_length = 256 + content_length + (content_length >> 4);\n\tresponse_buffer = malloc(buffer_length);\n\tif(response_buffer == NULL)\n\t\treturn NULL;\n\t*response_len = snprintf(response_buffer, buffer_length,\n\t                         \"HTTP/1.1 200 OK\\r\\n\"\n\t                         \"Content-Type: text/plain\\r\\n\"\n\t                         \"Transfer-Encoding: chunked\\r\\n\"\n\t                         \"\\r\\n\");\n\n\t\n\tcontent_buffer = malloc(content_length);\n\tif(content_buffer == NULL) {\n\t\tfree(response_buffer);\n\t\treturn NULL;\n\t}\n\tbuild_content(content_buffer, content_length);\n\n\t\n\ti = 0;\n\twhile(i < content_length) {\n\t\tn = (rand() % 199) + 1;\n\t\tif(i + n > content_length) {\n\t\t\tn = content_length - i;\n\t\t}\n\t\t\n\t\t*response_len += snprintf(response_buffer + *response_len,\n\t\t                          buffer_length - *response_len,\n\t\t                          \"%x\\r\\n\", n);\n\t\tmemcpy(response_buffer + *response_len, content_buffer + i, n);\n\t\t*response_len += n;\n\t\ti += n;\n\t\tresponse_buffer[(*response_len)++] = '\\r';\n\t\tresponse_buffer[(*response_len)++] = '\\n';\n\t}\n\t\n\tmemcpy(response_buffer + *response_len, \"0\\r\\n\\r\\n\", 5);\n\t*response_len += 5;\n\tfree(content_buffer);\n\n\tprintf(\"resp_length=%lu buffer_length=%lu content_length=%lu\\n\",\n\t       *response_len, buffer_length, content_length);\n\treturn response_buffer;\n}\n\n\n#ifdef OLD_HEADER\n#define FAVICON_LENGTH (6 + 16 + 12 + 8 + 32 * 4)\n#else\n#define FAVICON_LENGTH (6 + 16 + 40 + 8 + 32 * 4)\n#endif",
+        "cve": "CVE-2024-29195",
+        "severity": 7.0,
+        "description": "The vulnerability lies in the buffer size calculation on this line: `buffer_length = 256 + content_length + (content_length >> 4);`. There are two related problems. First, if `content_length` is large (close to SIZE_MAX), the arithmetic operations—specifically `content_length + (content_length >> 4)` and then adding 256—can cause an integer wraparound (overflow) on the unsigned `size_t` type, producing a `buffer_length` that is far smaller than the actual required size. Second, even without overflow, the calculation is semantically wrong: the chunked Transfer-Encoding format adds per-chunk overhead (hex size line + CRLF prefix and CRLF suffix). In the worst case (chunks of size 1), this overhead can be ~5–6 extra bytes per byte of content, vastly exceeding the `content_length / 16` overhead reserved. As a result, the subsequent `snprintf`, `memcpy`, and direct byte writes into `response_buffer` during the chunked encoding loop will write beyond the allocated buffer boundary, causing a heap buffer overflow that can lead to memory corruption or remote code execution.",
+        "solution": "1. Implement safe arithmetic helper functions (e.g., `safe_add`, `safe_mul`) that detect integer overflow before it occurs and return an error condition. 2. Enforce a maximum allowed `content_length` value (e.g., a defined constant such as `MAX_CONTENT_LENGTH`) and reject inputs that exceed it before any allocation. 3. Recalculate the required buffer size to correctly account for worst-case chunked encoding overhead. Since each byte of content can be its own chunk with a hex-length line (`%x\\r\\n`) plus a trailing `\\r\\n`, the overhead per chunk is at minimum 5 bytes, so use a formula such as `buffer_length = 256 + content_length + (content_length * 6) + 5` (for the terminator), computed via safe multiplication and addition to prevent overflow. 4. After computing the size safely, allocate the buffer and verify the allocation succeeded. 5. Add proper cleanup (freeing `content_buffer` and `response_buffer`) on any error path to prevent memory leaks.",
+        "start_line": 103,
+        "end_line": 163
+      }
+    },
+    "verdict": "valid_security_issue",
+    "reason": "build_chunked_response() underestimates the worst-case overhead of chunked encoding and never checks remaining capacity before appending each chunk header, body, CRLF trailer, and final terminator. The current program fixes content_length to 16 KiB, so the large-size wraparound part of the report is not reachable here, but the heap overflow from too many small chunks is real in the shipped code.",
+    "severity": "low",
+    "evidence": {
+      "repo_files": [
+        "miniupnpc/src/minihttptestserver.c"
+      ],
+      "functions": [
+        "build_chunked_response",
+        "handle_http_connection",
+        "server",
+        "main"
+      ],
+      "code_path": [
+        "miniupnpc/src/minihttptestserver.c:103-155 allocates 256 + content_length + (content_length >> 4) and appends chunk framing without a bounds check",
+        "miniupnpc/src/minihttptestserver.c:137 contains an explicit TODO comment about missing buffer-size checks",
+        "miniupnpc/src/minihttptestserver.c:431-433 selects this path for MODE_CHUNKED requests",
+        "miniupnpc/src/minihttptestserver.c:572-589 binds the test server to loopback, so reachability is local-only"
+      ]
+    },
+    "exploitability": "Only affects the standalone test server utility, and that utility listens on loopback. A local client can request the chunked mode and trigger heap corruption in the forked child handling the connection."
+  },
+  {
+    "finding_index": 147,
+    "original_finding": {
+      "file": "miniupnpc/src/miniwget.c",
+      "cve": "CVE-2022-3299",
+      "severity": 7.0,
+      "start_line": 334,
+      "end_line": 382,
+      "description": "The vulnerability in this code snippet involves inadequate validation of `content_buf_used` and `content_length` before performing memory reallocation via `realloc`. Specifically, when the condition `content_length >= 0 && (unsigned int)content_length >= (content_buf_used + n)` is evaluated, the expression `content_buf_used + n` can silently overflow as an unsigned integer, bypassing the intended boundary check and causing `content_buf_len` to be set to `content_length` even when it is insufficient to hold the existing buffered content plus the new data. Additionally, the code sets `content_buf_len = content_length` without asserting that `content_buf_used` is 0 and that no prior content has already been buffered, meaning a realloc could shrink the buffer below the amount of already-used memory, leading to a memory overflow (heap corruption) when `memcpy` subsequently writes `n` bytes past the valid allocation. There is also no assertion to confirm that `content_length` is nonzero before performing the reallocation, nor any guard against the initial allocation occurring when offset/used values are non-zero.",
+      "original": {
+        "code_snippet": "else\n\t\t{\n\t\t\t\n\t\t\tif(content_length > 0\n\t\t\t   && (content_buf_used + n) > (unsigned int)content_length) {\n\t\t\t\t\n\t\t\t\tn = content_length - content_buf_used;\n\t\t\t}\n\t\t\tif(content_buf_used + n > content_buf_len)\n\t\t\t{\n\t\t\t\tchar * tmp;\n\t\t\t\tif(content_length >= 0\n\t\t\t\t   && (unsigned int)content_length >= (content_buf_used + n)) {\n\t\t\t\t\tcontent_buf_len = content_length;\n\t\t\t\t} else {\n\t\t\t\t\tcontent_buf_len = content_buf_used + n;\n\t\t\t\t}\n\t\t\t\ttmp = realloc(content_buf, content_buf_len);\n\t\t\t\tif(tmp == NULL) {\n\t\t\t\t\t\n\t\t\t\t\tfree(content_buf);\n\t\t\t\t\tfree(header_buf);\n\t\t\t\t\t*size = -1;\n\t\t\t\t\treturn NULL;\n\t\t\t\t}\n\t\t\t\tcontent_buf = tmp;\n\t\t\t}\n\t\t\tmemcpy(content_buf + content_buf_used, buf, n);\n\t\t\tcontent_buf_used += n;\n\t\t}\n\t\t\n\t\tif(content_length > 0 && content_buf_used >= (unsigned int)content_length)\n\t\t{\n#ifdef DEBUG\n\t\t\tprintf(\"End of HTTP content\\n\");\n#endif\n\t\t\tbreak;\n\t\t}\n\t}\nend_of_stream:\n\tfree(header_buf);\n\t*size = content_buf_used;\n\tif(content_buf_used == 0)\n\t{\n\t\tfree(content_buf);\n\t\tcontent_buf = NULL;\n\t}\n\treturn content_buf;\n}",
+        "cve": "CVE-2022-3299",
+        "severity": 7.0,
+        "description": "The vulnerability in this code snippet involves inadequate validation of `content_buf_used` and `content_length` before performing memory reallocation via `realloc`. Specifically, when the condition `content_length >= 0 && (unsigned int)content_length >= (content_buf_used + n)` is evaluated, the expression `content_buf_used + n` can silently overflow as an unsigned integer, bypassing the intended boundary check and causing `content_buf_len` to be set to `content_length` even when it is insufficient to hold the existing buffered content plus the new data. Additionally, the code sets `content_buf_len = content_length` without asserting that `content_buf_used` is 0 and that no prior content has already been buffered, meaning a realloc could shrink the buffer below the amount of already-used memory, leading to a memory overflow (heap corruption) when `memcpy` subsequently writes `n` bytes past the valid allocation. There is also no assertion to confirm that `content_length` is nonzero before performing the reallocation, nor any guard against the initial allocation occurring when offset/used values are non-zero.",
+        "solution": "1. **Add pre-condition assertions before initial allocation**: Before the first `realloc`/allocation of `content_buf`, assert (or check with an explicit condition) that `content_buf_used == 0` and any relevant offset is 0, to ensure no prior data has been accumulated that the new allocation would not cover.\n2. **Add assertion that `content_length != 0` before realloc**: Guard the reallocation branch with an explicit check that `content_length > 0` to avoid resizing to 0 or a nonsensical value.\n3. **Fix the reallocation size logic**: Replace the condition `(unsigned int)content_length >= (content_buf_used + n)` with a check that also validates there is no unsigned integer overflow (e.g., verify `n <= content_length - content_buf_used` after confirming `content_buf_used <= (unsigned int)content_length`). When setting `content_buf_len = content_length`, additionally assert that `content_buf_used == 0`, or alternatively always compute `content_buf_len = content_buf_used + n` to guarantee the buffer is large enough for existing plus incoming data.\n4. **Improve error handling on allocation failure**: Ensure that on `realloc` returning `NULL`, both `content_buf` and `header_buf` are freed before returning, which already exists but should be verified to cover all new allocation paths.\n5. **Use safe arithmetic**: Introduce overflow checks (e.g., `if (n > UINT_MAX - content_buf_used)`) before computing `content_buf_used + n` to prevent silent unsigned integer wrap-around from bypassing security-relevant size comparisons.",
+        "start_line": 334,
+        "end_line": 382
+      }
+    },
+    "verdict": "valid_security_issue",
+    "reason": "getHTTPResponse() tracks buffered content with unsigned int counters and repeatedly computes content_buf_used + n without overflow protection. Once total response size approaches 4 GiB, the addition can wrap, causing the realloc size decision to use an undersized length and the subsequent memcpy() to write past the heap allocation. The path is reachable from attacker-controlled description URLs discovered over SSDP.",
+    "severity": "medium",
+    "evidence": {
+      "repo_files": [
+        "miniupnpc/src/miniwget.c",
+        "miniupnpc/src/miniupnpc.c"
+      ],
+      "functions": [
+        "getHTTPResponse",
+        "miniwget3",
+        "miniwget_getaddr",
+        "parserootdesc",
+        "miniwget_getaddr"
+      ],
+      "code_path": [
+        "miniupnpc/src/miniwget.c:97-103 stores content_buf_used/content_buf_len as unsigned int",
+        "miniupnpc/src/miniwget.c:334-361 grows the response buffer using content_buf_used + n without overflow checks before realloc/memcpy",
+        "miniupnpc/src/miniwget.c:628-645 routes miniwget_getaddr() into miniwget3() and getHTTPResponse()",
+        "miniupnpc/src/miniupnpc.c:567-678 fetches attacker-controlled root description URLs learned from SSDP LOCATION headers"
+      ]
+    },
+    "exploitability": "An attacker on the local network, or anyone controlling the description URL fetched by the client, can serve an extremely large HTTP response and trigger heap corruption. The response needs to exceed roughly 4 GiB, so exploitation is cumbersome and a crash is more realistic than reliable code execution."
+  }
+]
