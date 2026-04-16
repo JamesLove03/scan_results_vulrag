@@ -1,0 +1,185 @@
+========== Without stack protector ==========
+./test_overflow
+miniupnpd UDPLITE Stack Buffer Overflow PoC
+============================================
+Bug: upnpredirect.c:506 writes memcpy(protocol, "UDPLITE", 8)
+     but tomato_save()/tomato_delete() pass char proto[4]
+
+--- Control test: TCP (4 bytes including null, fits in proto[4]) ---
+=== PACKED STRUCT TEST (guarantees adjacency) ===
+  proto  is at offset 0
+  iaddr  is at offset 4
+
+--- Before ---
+  proto[4] (4 bytes): 00 00 00 00  |....|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  iaddr: "192.168.1.100"
+
+--- After ---
+  proto[4] (4 bytes): 54 43 50 00  |TCP.|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  proto: "TCP"
+  iaddr: "192.168.1.100"
+
+--- Control test: UDP (4 bytes including null, fits in proto[4]) ---
+=== PACKED STRUCT TEST (guarantees adjacency) ===
+  proto  is at offset 0
+  iaddr  is at offset 4
+
+--- Before ---
+  proto[4] (4 bytes): 00 00 00 00  |....|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  iaddr: "192.168.1.100"
+
+--- After ---
+  proto[4] (4 bytes): 55 44 50 00  |UDP.|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  proto: "UDP"
+  iaddr: "192.168.1.100"
+
+--- OVERFLOW test: UDPLITE (8 bytes into 4-byte buffer) ---
+=== PACKED STRUCT TEST (guarantees adjacency) ===
+  proto  is at offset 0
+  iaddr  is at offset 4
+
+--- Before ---
+  proto[4] (4 bytes): 00 00 00 00  |....|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  iaddr: "192.168.1.100"
+
+--- After ---
+  proto[4] (4 bytes): 55 44 50 4c  |UDPL|
+  iaddr[32] (32 bytes): 49 54 45 00 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |ITE.168.1.100...................|
+  proto: "UDPLITE"
+  iaddr: "ITE"
+
+  *** CORRUPTION DETECTED ***
+  iaddr was "192.168.1.100", now "ITE"
+  The overflow wrote into adjacent memory.
+
+============================================
+Full tomato_save() stack layout reproduction
+============================================
+
+--- Safe case: TCP ---
+=== BEFORE overflow (proto_int=6) ===
+  proto[4] (4 bytes): 50 50 50 50  |PPPP|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  iaddr as string: "192.168.1.100"
+
+=== AFTER overflow ===
+  proto[4] (4 bytes): 54 43 50 00  |TCP.|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  proto as string: "TCP"
+  iaddr as string: "192.168.1.100"
+
+=== What tomato_save() would write to the save file ===
+  fprintf: "TCP 4369 192.168.1.100 8738 [DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD192.168.1.100] 2863311530\n"
+
+--- Overflow case: UDPLITE ---
+=== BEFORE overflow (proto_int=136) ===
+  proto[4] (4 bytes): 50 50 50 50  |PPPP|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  iaddr as string: "192.168.1.100"
+
+=== AFTER overflow ===
+  proto[4] (4 bytes): 55 44 50 4c  |UDPL|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  proto as string: "UDPLITE"
+  iaddr as string: "192.168.1.100"
+
+=== What tomato_save() would write to the save file ===
+  fprintf: "UDPLITE 4369 192.168.1.100 8738 [DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD192.168.1.100] 2863311530\n"
+
+
+========== With stack protector ==========
+./test_overflow_protected; true
+miniupnpd UDPLITE Stack Buffer Overflow PoC
+============================================
+Bug: upnpredirect.c:506 writes memcpy(protocol, "UDPLITE", 8)
+     but tomato_save()/tomato_delete() pass char proto[4]
+
+--- Control test: TCP (4 bytes including null, fits in proto[4]) ---
+=== PACKED STRUCT TEST (guarantees adjacency) ===
+  proto  is at offset 0
+  iaddr  is at offset 4
+
+--- Before ---
+  proto[4] (4 bytes): 00 00 00 00  |....|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  iaddr: "192.168.1.100"
+
+--- After ---
+  proto[4] (4 bytes): 54 43 50 00  |TCP.|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  proto: "TCP"
+  iaddr: "192.168.1.100"
+
+--- Control test: UDP (4 bytes including null, fits in proto[4]) ---
+=== PACKED STRUCT TEST (guarantees adjacency) ===
+  proto  is at offset 0
+  iaddr  is at offset 4
+
+--- Before ---
+  proto[4] (4 bytes): 00 00 00 00  |....|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  iaddr: "192.168.1.100"
+
+--- After ---
+  proto[4] (4 bytes): 55 44 50 00  |UDP.|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  proto: "UDP"
+  iaddr: "192.168.1.100"
+
+--- OVERFLOW test: UDPLITE (8 bytes into 4-byte buffer) ---
+=== PACKED STRUCT TEST (guarantees adjacency) ===
+  proto  is at offset 0
+  iaddr  is at offset 4
+
+--- Before ---
+  proto[4] (4 bytes): 00 00 00 00  |....|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  iaddr: "192.168.1.100"
+
+--- After ---
+  proto[4] (4 bytes): 55 44 50 4c  |UDPL|
+  iaddr[32] (32 bytes): 49 54 45 00 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |ITE.168.1.100...................|
+  proto: "UDPLITE"
+  iaddr: "ITE"
+
+  *** CORRUPTION DETECTED ***
+  iaddr was "192.168.1.100", now "ITE"
+  The overflow wrote into adjacent memory.
+
+============================================
+Full tomato_save() stack layout reproduction
+============================================
+
+--- Safe case: TCP ---
+=== BEFORE overflow (proto_int=6) ===
+  proto[4] (4 bytes): 50 50 50 50  |PPPP|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  iaddr as string: "192.168.1.100"
+
+=== AFTER overflow ===
+  proto[4] (4 bytes): 54 43 50 00  |TCP.|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+  proto as string: "TCP"
+  iaddr as string: "192.168.1.100"
+
+=== What tomato_save() would write to the save file ===
+  fprintf: "TCP 4369 192.168.1.100 8738 [DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDx��[�^?] 2863311530\n"
+
+--- Overflow case: UDPLITE ---
+=== BEFORE overflow (proto_int=136) ===
+  proto[4] (4 bytes): 50 50 50 50  |PPPP|
+  iaddr[32] (32 bytes): 31 39 32 2e 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |192.168.1.100...................|
+
+=== AFTER overflow ===
+  proto[4] (4 bytes): 55 44 50 4c  |UDPL|
+  iaddr[32] (32 bytes): 49 54 45 00 31 36 38 2e 31 2e 31 30 30 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |ITE.168.1.100...................|
+  proto as string: "UDPLITE"
+  iaddr as string: "ITE"
+
+=== What tomato_save() would write to the save file ===
+  fprintf: "UDPLITE 4369 ITE 8738 [DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDx��[�^?] 2863311530\n"
