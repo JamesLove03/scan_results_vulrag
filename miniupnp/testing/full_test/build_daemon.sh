@@ -1,59 +1,84 @@
 #!/bin/bash
 # build_daemon.sh
 # Builds miniupnpd with TOMATO support enabled for full end-to-end testing.
-# Run this from the testing/ directory on Ubuntu.
+# Run as a regular user from the full_test/ directory on Ubuntu.
 #
 # Requirements:
-#   sudo apt install build-essential iptables libiptables-dev pkg-config
+#   sudo apt install build-essential libxtables-dev pkg-config
 
-set -e
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../../repo/miniupnp/miniupnpd" && pwd)"
+BUILD_DIR="$SCRIPT_DIR/build"
 
-REPO_DIR="$(cd "$(dirname "$0")/../repo/miniupnp/miniupnpd" && pwd)"
-BUILD_DIR="$(cd "$(dirname "$0")" && pwd)/build"
+echo "[*] Script dir: $SCRIPT_DIR"
+echo "[*] Repo dir:   $REPO_DIR"
+echo "[*] Build dir:  $BUILD_DIR"
 
-echo "[*] Repo dir: $REPO_DIR"
-echo "[*] Build dir: $BUILD_DIR"
+if [ ! -f "$REPO_DIR/configure" ]; then
+    echo "[-] Cannot find miniupnpd repo at: $REPO_DIR"
+    echo "    Check the path and try again."
+    exit 1
+fi
 
 # Install dependencies
-echo "[*] Installing dependencies..."
-sudo apt-get install -y build-essential iptables libiptables-dev pkg-config 2>/dev/null || true
+echo "[*] Installing build dependencies..."
+sudo apt-get install -y build-essential libxtables-dev pkg-config || {
+    echo "[-] apt-get failed — check your internet connection or install manually"
+    exit 1
+}
 
 mkdir -p "$BUILD_DIR"
 cd "$REPO_DIR"
 
-# Run configure with iptables firewall
-# We manually inject -DTOMATO into CFLAGS since the Tomato OS target
-# in configure is designed for the actual Tomato firmware build system.
+# Run configure to generate config.mk and config.h
+echo ""
 echo "[*] Running configure..."
 ./configure --firewall=iptables
+if [ ! -f config.mk ]; then
+    echo "[-] configure did not produce config.mk — see errors above"
+    exit 1
+fi
+echo "[+] configure succeeded, config.mk generated"
 
-# Inject TOMATO and ensure IPPROTO_UDPLITE is available
+# Inject TOMATO into config.h
 echo "[*] Patching config.h to enable TOMATO..."
-if ! grep -q "define TOMATO" config.h 2>/dev/null; then
-    echo "" >> config.h
-    echo "#ifndef TOMATO" >> config.h
-    echo "#define TOMATO" >> config.h
-    echo "#endif" >> config.h
+if grep -q "define TOMATO" config.h 2>/dev/null; then
+    echo "[*] TOMATO already defined in config.h, skipping"
+else
+    printf '\n#ifndef TOMATO\n#define TOMATO\n#endif\n' >> config.h
+    echo "[+] TOMATO added to config.h"
 fi
 
-# Build with TOMATO defined and no stack protector so we see
-# silent corruption (use CFLAGS_EXTRA=-fstack-protector to test crash path)
-echo "[*] Building miniupnpd..."
-make -f Makefile.linux \
-    CFLAGS="-g -O0 -fno-stack-protector -Wall -DTOMATO" \
-    miniupnpd
-
+# Build unprotected variant — shows silent memory corruption
+echo ""
+echo "[*] Building miniupnpd (no stack protector)..."
+make -f Makefile.linux clean > /dev/null 2>&1 || true
+make -f Makefile.linux miniupnpd \
+    CPPFLAGS="-DTOMATO" \
+    CFLAGS="-g -O0 -fno-stack-protector -Wall -Wno-error" 2>&1
+if [ ! -f miniupnpd ]; then
+    echo "[-] Build failed — miniupnpd binary not produced. See errors above."
+    exit 1
+fi
 cp miniupnpd "$BUILD_DIR/miniupnpd"
 echo "[+] Built: $BUILD_DIR/miniupnpd"
 
-# Also build a stack-protected version
-echo "[*] Building protected variant..."
-make -f Makefile.linux \
-    CFLAGS="-g -O0 -fstack-protector-all -Wall -DTOMATO" \
-    miniupnpd
-
+# Build stack-protected variant — shows daemon crash/DoS
+echo ""
+echo "[*] Building miniupnpd_protected (with stack protector)..."
+make -f Makefile.linux clean > /dev/null 2>&1 || true
+make -f Makefile.linux miniupnpd \
+    CPPFLAGS="-DTOMATO" \
+    CFLAGS="-g -O0 -fstack-protector-all -Wall -Wno-error" 2>&1
+if [ ! -f miniupnpd ]; then
+    echo "[-] Protected build failed. See errors above."
+    exit 1
+fi
 cp miniupnpd "$BUILD_DIR/miniupnpd_protected"
 echo "[+] Built: $BUILD_DIR/miniupnpd_protected"
 
 echo ""
-echo "[+] Done. Run ./run_daemon.sh to start the test."
+echo "[+] All done. Next steps:"
+echo "    1. sudo ./run_daemon.sh"
+echo "    2. python3 send_soap.py"
+echo "    3. sudo ./trigger_save.sh"
